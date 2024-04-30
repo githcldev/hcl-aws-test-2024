@@ -1,0 +1,158 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  hcl-test-aws
+  Sample SAM Template for hcl aws test practice
+
+Globals:
+  Function:
+    Runtime: python3.12
+    Timeout: 5
+    Tracing: Active
+    MemorySize: 128
+    LoggingConfig:
+      LogFormat: JSON
+
+Parameters:
+  BucketName:
+    Type: String
+    Default: test-hcl-py
+  QueueUrl:
+    Type: String
+    Default: https://sqs.eu-north-1.amazonaws.com/671379064790/hclaws-queue
+  QueueName:
+    Type: String
+    Default: hclaws-queue
+  NotifArn:
+    Type: String
+    Default: arn:aws:sns:eu-north-1:671379064790:hclaws-notif
+
+Resources:
+  KeyAuthFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: app.lambda_handler
+      Description: Handler for Lambda authorizer
+      CodeUri: functions/key-auth/
+      Tags:
+        Stack: !Sub "${AWS::StackName}"
+
+  AuthorizerFunctionExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - apigateway.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: "/"
+      Tags:
+        - Key: "Stack"
+          Value: !Sub "${AWS::StackName}"
+
+  AuthorizerFunctionExecutionRolePolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub ${AWS::StackName}-Authorizer-Policy
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action: lambda:InvokeFunction
+            Resource: !GetAtt KeyAuthFunction.Arn
+      Roles:
+        - Ref: AuthorizerFunctionExecutionRole
+
+  IncomingHttpPostAPI:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      FailOnWarnings: True
+      Name: IncomingHttpPostAPI
+      StageName: dev
+      Auth:
+        Authorizers:
+          LambdaAuthorizer:
+            AuthorizerPayloadFormatVersion: 1.0
+            FunctionArn: !GetAtt KeyAuthFunction.Arn
+            FunctionInvokeRole: !GetAtt AuthorizerFunctionExecutionRole.Arn
+            Identity:
+              Headers:
+                - Authorization
+              ReauthorizeEvery: 100
+        DefaultAuthorizer: LambdaAuthorizer
+
+  WebSiteBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: test-hcl-py
+      PolicyDocument:
+        Id: PolicyForStorageContent
+        Statement:
+        - Sid: "AllowStorageAccess"
+          Action: 
+            - "s3:GetObject"
+            - "s3:PutObject"
+          Effect: "Allow"
+          Principal: '*'
+          Resource: "arn:aws:s3:::test-hcl-py/*"
+
+  WriteStorageFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: functions/write-storage/
+      Handler: app.lambda_handler
+      Environment:
+        Variables:
+          bucket_name: !Ref BucketName
+          queue_url: !Ref QueueUrl
+          queue_name: !Ref QueueName
+      Events:
+        ApiEvent:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref IncomingHttpPostAPI
+            Path: /
+            Method: POST
+
+  SendEmailFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: functions/send-email/
+      Handler: app.lambda_handler
+      Environment:
+        Variables:
+          bucket_name: !Ref BucketName
+          queue_url: !Ref QueueUrl
+          notif_arn: !Ref NotifArn
+          queue_name: !Ref QueueName
+      Events:
+        SQSEvent:
+          Type: SQS
+          Properties:
+            Enabled: true
+            Queue: arn:aws:sqs:eu-north-1:671379064790:hclaws-queue
+
+Outputs:
+  Region:
+    Description: "Region"
+    Value: !Ref AWS::Region
+
+  IncomingHttpPostAPI:
+    Description: API Gateway endpoint URL for Prod stage for Hello World function
+    Value: !Sub "https://${IncomingHttpPostAPI}.execute-api.${AWS::Region}.amazonaws.com/dev/"
+
+  KeyAuthFunction:
+    Description: "Write Storage Function ARN"
+    Value: !Ref KeyAuthFunction
+
+  WriteStorageFunction:
+    Description: "Write Storage Function ARN"
+    Value: !Ref WriteStorageFunction
+
+  SendEmailFunction:
+    Description: "Write Storage Function ARN"
+    Value: !Ref SendEmailFunction
